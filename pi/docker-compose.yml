@@ -1,0 +1,20 @@
+services:
+  wiipi:
+    build: .
+    container_name: wiipi
+    restart: unless-stopped
+    # Needed to drive the USB gadget (configfs) and to loop-mount the drive image.
+    privileged: true
+    ports:
+      - "8765:8765"
+    environment:
+      WIIPI_IMAGE_SIZE: "64G"      # size of the virtual drive; only used when it is first created
+      WIIPI_TOKEN: ""              # set this if the web UI is reachable from outside your LAN
+      WIIPI_IDLE_SECONDS: "60"     # how long the Wii must be off the drive before auto-install
+      WIIPI_AUTO_INSTALL: "1"
+    volumes:
+      - ./data:/data               # drive image (wii.img), staging area and state
+      - ./inbox:/inbox             # drop .wbfs/.iso files here (scp, rsync, SMB ...) to queue them
+      - /sys/kernel/config:/sys/kernel/config
+      - /dev:/dev
+      - /lib/modules:/lib/modules:ro

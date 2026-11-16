@@ -40,6 +40,7 @@
 #include "gecko.h"
 #include "sys.h"
 #include "usbloader/wdvd.h"
+#include "network/PiSync.h"
 
 static const char * OnOffText[] =
 {
@@ -93,6 +94,10 @@ HardDriveSM::HardDriveSM()
 	Options->SetName(Idx++, "%s", tr( "Install Partitions" ));
 	Options->SetName(Idx++, "%s", tr( "GC Install Compressed" ));
 	Options->SetName(Idx++, "%s", tr( "GC Install 32K Aligned" ));
+	Options->SetName(Idx++, "%s", tr( "Pi Sync" ));
+	Options->SetName(Idx++, "%s", tr( "Pi Sync Address" ));
+	Options->SetName(Idx++, "%s", tr( "Pi Sync Port" ));
+	Options->SetName(Idx++, "%s", tr( "Pi Sync Now" ));
 
 	SetOptionValues();
 }
@@ -204,6 +209,21 @@ void HardDriveSM::SetOptionValues()
 
 	//! Settings: GC Install 32K Aligned
 	Options->SetValue(Idx++, "%s", tr( OnOffText[Settings.GCInstallAligned] ));
+
+	//! Settings: Pi Sync
+	Options->SetValue(Idx++, "%s", tr( OnOffText[Settings.PiSync] ));
+
+	//! Settings: Pi Sync Address
+	if (Settings.PiSyncHost[0] != 0)
+		Options->SetValue(Idx++, "%s", Settings.PiSyncHost);
+	else
+		Options->SetValue(Idx++, "%s", tr( "not set" ));
+
+	//! Settings: Pi Sync Port
+	Options->SetValue(Idx++, "%i", Settings.PiSyncPort);
+
+	//! Settings: Pi Sync Now
+	Options->SetValue(Idx++, " ");
 }
 
 int HardDriveSM::GetMenuInternal()
@@ -320,6 +340,47 @@ int HardDriveSM::GetMenuInternal()
 	else if (ret == ++Idx)
 	{
 		if (++Settings.GCInstallAligned >= MAX_ON_OFF) Settings.GCInstallAligned = 0;
+	}
+
+	//! Settings: Pi Sync
+	else if (ret == ++Idx)
+	{
+		if (++Settings.PiSync >= MAX_ON_OFF) Settings.PiSync = 0;
+	}
+
+	//! Settings: Pi Sync Address
+	else if (ret == ++Idx)
+	{
+		char entered[sizeof(Settings.PiSyncHost)];
+		snprintf(entered, sizeof(entered), "%s", Settings.PiSyncHost);
+		if (OnScreenKeyboard(entered, sizeof(entered), 0))
+		{
+			// Only the address: the port has its own setting
+			if (strpbrk(entered, " /:\\"))
+				WindowPrompt(tr("Error:"), tr("Enter only the IP address of the Raspberry Pi, e.g. 192.168.1.50"), tr("OK"));
+			else
+				snprintf(Settings.PiSyncHost, sizeof(Settings.PiSyncHost), "%s", entered);
+		}
+	}
+
+	//! Settings: Pi Sync Port
+	else if (ret == ++Idx)
+	{
+		char entered[8];
+		snprintf(entered, sizeof(entered), "%i", Settings.PiSyncPort);
+		if (OnScreenNumpad(entered, sizeof(entered)))
+		{
+			int port = atoi(entered);
+			if (port > 0 && port < 65536)
+				Settings.PiSyncPort = port;
+		}
+	}
+
+	//! Settings: Pi Sync Now
+	else if (ret == ++Idx)
+	{
+		// No game browser exists while a settings menu is open, so the USB drive is free
+		PiSync::Run(true);
 	}
 
 	SetOptionValues();

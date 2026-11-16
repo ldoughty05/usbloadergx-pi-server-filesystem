@@ -1,0 +1,30 @@
+name: Pi service tests
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'pi/**'
+      - 'source/network/PiSync.*'
+      - '.github/workflows/pi.yml'
+  pull_request:
+    paths:
+      - 'pi/**'
+      - 'source/network/PiSync.*'
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install dependencies
+        run: pip install aiohttp pytest
+
+      - name: Run tests
+        working-directory: pi
+        run: python -m pytest -v tests

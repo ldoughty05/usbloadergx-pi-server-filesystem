@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Wii Game Drive</title>
+<style>
+  :root {
+    --bg: #10141a; --card: #1a212b; --line: #2a3442; --text: #e8edf3; --dim: #93a1b3;
+    --accent: #37b6e9; --ok: #4cc38a; --warn: #f0b849; --bad: #f2695c;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 760px; margin: 0 auto; padding: 16px 14px 48px; }
+  h1 { font-size: 20px; margin: 4px 0 14px; }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--dim); margin: 0 0 10px; }
+  section { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 14px; margin-bottom: 14px; }
+  .row { display: flex; align-items: center; gap: 10px; }
+  .grow { flex: 1; min-width: 0; }
+  .title { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sub { color: var(--dim); font-size: 13px; overflow-wrap: anywhere; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--dim); flex: none; }
+  .dot.ok { background: var(--ok); } .dot.warn { background: var(--warn); } .dot.bad { background: var(--bad); }
+  .list > div { padding: 10px 0; border-top: 1px solid var(--line); }
+  .list > div:first-child { border-top: 0; padding-top: 0; }
+  .list > div:last-child { padding-bottom: 0; }
+  .empty { color: var(--dim); }
+  button, .filebtn { font: inherit; color: var(--text); background: #263141; border: 1px solid var(--line);
+           border-radius: 8px; padding: 8px 12px; cursor: pointer; }
+  button.primary, .filebtn { background: var(--accent); border-color: var(--accent); color: #06202c; font-weight: 600; }
+  button.small { padding: 4px 9px; font-size: 13px; }
+  button:disabled { opacity: .5; cursor: default; }
+  .bar { height: 6px; background: #263141; border-radius: 3px; overflow: hidden; margin-top: 6px; }
+  .bar > i { display: block; height: 100%; background: var(--accent); width: 0; transition: width .3s; }
+  .err { color: var(--bad); } .struck { text-decoration: line-through; color: var(--dim); }
+  .actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+  input[type=file] { display: none; }
+  .badge { font-size: 11px; border: 1px solid var(--line); border-radius: 6px; padding: 1px 6px; color: var(--dim); flex: none; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Wii Game Drive</h1>
+
+  <section>
+    <div class="row">
+      <span class="dot" id="dot"></span>
+      <div class="grow">
+        <div class="title" id="state">Connecting…</div>
+        <div class="sub" id="detail"></div>
+      </div>
+    </div>
+    <div class="bar" id="syncbar" hidden><i></i></div>
+    <div class="sub err" id="error"></div>
+    <div class="actions">
+      <label class="filebtn">Add games<input type="file" id="files" multiple accept=".iso,.wbfs,.ciso,.wdf,.wia,.gcm"></label>
+      <button id="syncnow">Install now</button>
+      <button id="rescan">Rescan drive</button>
+    </div>
+  </section>
+
+  <section>
+    <h2>Queue</h2>
+    <div class="list" id="queue"></div>
+  </section>
+
+  <section>
+    <h2>On the drive <span id="space"></span></h2>
+    <div class="list" id="games"></div>
+  </section>
+</main>
+
+<script>
+const CHUNK = 8 * 1024 * 1024;   // small enough for tunnels and reverse proxies
+const $ = id => document.getElementById(id);
+let token = localStorage.getItem("wiipi-token") || "";
+let last = null;
+const local = new Map();          // uploads running in this browser tab
+
+function el(tag, attrs = {}, ...children) {
+  const node = document.createElement(tag);
+  for (const [key, value] of Object.entries(attrs)) {
+    if (key === "onclick") node.onclick = value; else if (value !== false) node.setAttribute(key, value);
+  }
+  for (const child of children) node.append(child);
+  return node;
+}
+
+function size(bytes) {
+  if (!bytes) return "0 MB";
+  const gb = bytes / 2 ** 30;
+  return gb >= 1 ? gb.toFixed(2) + " GB" : Math.round(bytes / 2 ** 20) + " MB";
+}
+
+async function api(path, options = {}) {
+  const headers = Object.assign({}, options.headers);
+  if (token) headers.Authorization = "Bearer " + token;
+  const response = await fetch(path, Object.assign({}, options, { headers }));
+  if (response.status === 401) {
+    const entered = prompt("Access token (WIIPI_TOKEN):");
+    if (entered) { token = entered.trim(); localStorage.setItem("wiipi-token", token); return api(path, options); }
+  }
+  return response;
+}
+
+async function post(path, body) {
+  const response = await api(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || {}) });
+  if (!response.ok) alert(await response.text());
+  refresh();
+}
+
+function bar(fraction) {
+  const inner = el("i");
+  inner.style.width = Math.round(Math.min(1, Math.max(0, fraction)) * 100) + "%";
+  return el("div", { class: "bar" }, inner);
+}
+
+const LABELS = { received: "Waiting to be prepared", preparing: "Preparing", ready: "Ready to install",
+                 installing: "Installing", installed: "Installed", failed: "Failed" };
+
+function render(data) {
+  const drive = data.drive;
+  let dot = "ok", state, detail;
+  if (drive.error) dot = "bad";
+  if (drive.busy) { dot = "warn"; state = "Installing: drive is detached from the Wii"; detail = drive.message; }
+  else if (!drive.attached) { dot = "bad"; state = "Drive is not attached"; detail = "The Wii cannot see the drive right now."; }
+  else if (drive.host_active) { state = "Wii is using the drive"; detail = "New games install when USB Loader GX releases the drive or the Wii is turned off."; }
+  else { state = "Drive is idle"; detail = data.auto_install ? "Wii is off or not using the drive. Games install automatically." : "Automatic install is off."; }
+  $("dot").className = "dot " + dot;
+  $("state").textContent = state;
+  $("detail").textContent = detail;
+  $("error").textContent = drive.error || "";
+  const progress = data.progress;
+  $("syncbar").hidden = !drive.busy;
+  $("syncbar").firstElementChild.style.width = progress.total ? Math.round(progress.done / progress.total * 100) + "%" : "0";
+  $("space").textContent = drive.size ? "· " + size(drive.free) + " free of " + size(drive.size) : "";
+
+  const pending = data.items.some(item => item.status === "ready") || data.pending_deletes.length > 0;
+  $("syncnow").disabled = drive.busy || !pending;
+  $("rescan").disabled = drive.busy;
+
+  const queue = $("queue");
+  queue.replaceChildren();
+  for (const upload of local.values()) {
+    queue.append(el("div", {},
+      el("div", { class: "row" },
+        el("div", { class: "grow" }, el("div", { class: "title" }, upload.name),
+          el("div", { class: "sub" + (upload.error ? " err" : "") },
+            upload.error || "Uploading " + size(upload.sent) + " of " + size(upload.size))),
+        el("button", { class: "small", onclick: () => { upload.cancelled = true; } }, "Cancel")),
+      bar(upload.sent / upload.size)));
+  }
+  for (const item of data.items) {
+    const busy = item.status === "preparing" || item.status === "installing";
+    const line = el("div", { class: "sub" + (item.status === "failed" ? " err" : "") },
+      LABELS[item.status] + (item.error ? ": " + item.error : "") + (item.size ? " · " + size(item.size) : ""));
+    const row = el("div", {}, el("div", { class: "row" },
+      el("div", { class: "grow" }, el("div", { class: "title" }, item.title || item.name), line),
+      item.game_id ? el("span", { class: "badge" }, item.game_id) : "",
+      busy ? "" : el("button", { class: "small", onclick: () => api("/api/items/" + item.id, { method: "DELETE" }).then(refresh) },
+        item.status === "installed" || item.status === "failed" ? "Clear" : "Cancel")));
+    if (busy) row.append(bar(item.progress));
+    queue.append(row);
+  }
+  if (!queue.children.length) queue.append(el("div", { class: "empty" }, "Nothing queued. Add a .wbfs or .iso file, or drop one into the inbox folder on the Pi."));
+
+  const games = $("games");
+  games.replaceChildren();
+  for (const game of data.installed) {
+    const doomed = data.pending_deletes.includes(game.path);
+    games.append(el("div", { class: "row" },
+      el("div", { class: "grow" },
+        el("div", { class: "title" + (doomed ? " struck" : "") }, game.title),
+        el("div", { class: "sub" }, (doomed ? "Will be removed at the next install · " : "") + size(game.size))),
+      el("span", { class: "badge" }, game.kind === "gc" ? "GC" : "Wii"),
+      game.id ? el("span", { class: "badge" }, game.id) : "",
+      el("button", { class: "small", onclick: () => {
+        if (doomed || confirm("Remove " + game.title + " from the drive?")) post("/api/games/delete", { path: game.path, undo: doomed });
+      } }, doomed ? "Keep" : "Remove")));
+  }
+  if (!games.children.length) games.append(el("div", { class: "empty" }, "No games found on the drive yet."));
+}
+
+async function refresh() {
+  try {
+    const response = await api("/api/status");
+    if (response.ok) { last = await response.json(); render(last); }
+  } catch (error) {
+    $("dot").className = "dot bad";
+    $("state").textContent = "Cannot reach the Pi";
+    $("detail").textContent = "";
+  }
+}
+
+async function upload(file) {
+  const entry = { name: file.name, size: file.size, sent: 0, error: "", cancelled: false };
+  const key = Symbol(file.name);
+  local.set(key, entry);
+  let id = null;
+  try {
+    const created = await api("/api/uploads", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: file.name, size: file.size }) });
+    if (!created.ok) throw new Error(await created.text());
+    id = (await created.json()).id;
+    let failures = 0;
+    while (entry.sent < file.size) {
+      if (entry.cancelled) throw new Error("cancelled");
+      try {
+        const response = await api("/api/uploads/" + id + "?offset=" + entry.sent,
+          { method: "PUT", body: file.slice(entry.sent, entry.sent + CHUNK) });
+        if (response.status !== 200 && response.status !== 409) throw new Error(await response.text());
+        entry.sent = (await response.json()).offset;   // 409 tells us where to resume
+        failures = 0;
+      } catch (error) {
+        if (++failures > 8) throw error;
+        await new Promise(resolve => setTimeout(resolve, 1500 * failures));
+      }
+      if (last) render(last);
+    }
+    const done = await api("/api/uploads/" + id + "/complete", { method: "POST" });
+    if (!done.ok) throw new Error(await done.text());
+    local.delete(key);
+  } catch (error) {
+    if (id) api("/api/uploads/" + id, { method: "DELETE" }).catch(() => {});
+    if (entry.cancelled) { local.delete(key); } else { entry.error = "Upload failed: " + error.message; setTimeout(() => { local.delete(key); }, 15000); }
+  }
+  refresh();
+}
+
+$("files").onchange = async event => {
+  const files = [...event.target.files];
+  event.target.value = "";
+  for (const file of files) await upload(file);   // one at a time
+};
+$("syncnow").onclick = () => {
+  const active = last && last.drive.host_active;
+  if (active && !confirm("The Wii appears to be using the drive.\n\nInstalling now unplugs it from the Wii: a running game will freeze or crash. In USB Loader GX, use Pi Sync instead.\n\nUnplug it anyway?")) return;
+  post("/api/sync", { force: true });
+};
+$("rescan").onclick = () => {
+  const active = last && last.drive.host_active;
+  if (active && !confirm("Rescanning briefly unplugs the drive from the Wii. Continue?")) return;
+  post("/api/sync", { force: true, rescan: true });
+};
+window.onbeforeunload = () => local.size ? "Uploads are still running." : undefined;
+
+refresh();
+setInterval(refresh, 2000);
+</script>
+</body>
+</html>

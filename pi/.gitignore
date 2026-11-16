@@ -1,0 +1,4 @@
+data/
+inbox/
+__pycache__/
+.pytest_cache/

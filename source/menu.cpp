@@ -27,6 +27,7 @@
 #include "usbloader/disc.h"
 #include "usbloader/GameList.h"
 #include "usbloader/MountGamePartition.h"
+#include "network/PiSync.h"
 #include "usbloader/wdvd.h"
 #include "mload/mload_modules.h"
 #include "audio.h"
@@ -199,7 +200,7 @@ int MainMenu(int menu)
 
 	WDVD_StopMotor();
 
-	if (Settings.autonetwork)
+	if (Settings.autonetwork || Settings.PiSync)
 		ResumeNetworkThread();
 
 	while (currentMenu != MENU_EXIT)
@@ -214,6 +215,10 @@ int MainMenu(int menu)
 				break;
 			case MENU_HOMEBREWBROWSE:
 				currentMenu = HomebrewBrowser::Execute();
+				break;
+			case MENU_PISYNC:
+				// The game browser is gone at this point, so nothing is using the USB drive
+				currentMenu = PiSync::Execute();
 				break;
 			case MENU_DISCLIST:
 			default: // unrecognized menu

@@ -22,6 +22,7 @@
 #include "usbloader/wdvd.h"
 #include "usbloader/GameList.h"
 #include "network/networkops.h"
+#include "network/PiSync.h"
 #include "network/update.h"
 #include "network/ImageDownloader.h"
 #include "settings/CSettings.h"
@@ -1136,6 +1137,14 @@ int GameBrowseMenu::MainLoop()
 {
 	UpdateClock();
 	CheckDiscSlotUpdate();
+
+	if (PiSync::CheckPending())
+	{
+		gprintf("\tPi Sync has pending changes\n");
+		if (WindowPrompt(tr("Pi Sync"), PiSync::PromptText(), tr("Yes"), tr("Later")) == 1)
+			return MENU_PISYNC;
+		PiSync::Decline();
+	}
 
 	if (poweroffBtn->GetState() == STATE_CLICKED)
 	{

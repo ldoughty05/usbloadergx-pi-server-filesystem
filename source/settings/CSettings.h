@@ -159,6 +159,9 @@ class CSettings
 		short SilentHomeMenu;
 		short MultiplePartitions;
 		short USBPort;
+		short PiSync;
+		int PiSyncPort;
+		char PiSyncHost[64];
 		short BlockIOSReload;
 		u32 InstallPartitions;
 		u32 ParentalBlocks;
